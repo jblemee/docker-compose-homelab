@@ -1,0 +1,58 @@
+# =============================================================================
+# Docker Compose Homelab - Base Infrastructure
+# =============================================================================
+# This file contains only the reverse proxy and SSL infrastructure.
+# Add services using: docker compose -f docker-compose.yml -f services/media.yml up -d
+# =============================================================================
+
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy:latest
+    container_name: nginx-proxy
+    restart: always
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - 80:80
+      - 443:443
+    labels:
+      com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy: "true"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./proxy/uploadsize.conf:/etc/nginx/conf.d/uploadsize.conf:ro
+    networks:
+      - proxy-tier
+
+  letsencrypt-companion:
+    image: nginxproxy/acme-companion:latest
+    container_name: letsencrypt
+    restart: always
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+    volumes:
+      - certs:/etc/nginx/certs
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy-tier
+    depends_on:
+      - proxy
+
+volumes:
+  certs:
+  vhost.d:
+  html:
+
+networks:
+  proxy-tier:
+    name: proxy-tier

@@ -1,0 +1,18 @@
+# Environment files (contain secrets)
+.env
+.env_*
+!.env.example
+
+# Data directories
+/data/
+
+# Claude Code local files
+.claude/*
+!.claude/skills/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

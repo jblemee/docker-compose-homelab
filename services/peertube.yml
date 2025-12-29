@@ -1,0 +1,107 @@
+# =============================================================================
+# PeerTube - Video Platform (with PostgreSQL, Redis, Postfix)
+# =============================================================================
+# Usage: docker compose -f docker-compose.yml -f services/peertube.yml up -d
+#
+# Required .env variables:
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   PEERTUBE_ADMIN_EMAIL, PEERTUBE_SECRET
+#   PEERTUBE_SMTP_* (for email notifications)
+# =============================================================================
+
+services:
+  peertube:
+    image: chocobozzz/peertube:production
+    container_name: peertube
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Europe/Paris}
+      - VIRTUAL_HOST=video.${DOMAIN}
+      - VIRTUAL_PORT=9000
+      - LETSENCRYPT_HOST=video.${DOMAIN}
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+      # PeerTube config
+      - PEERTUBE_WEBSERVER_HOSTNAME=video.${DOMAIN}
+      - PEERTUBE_WEBSERVER_PORT=443
+      - PEERTUBE_WEBSERVER_HTTPS=true
+      - PEERTUBE_DB_USERNAME=${POSTGRES_USER:-peertube}
+      - PEERTUBE_DB_PASSWORD=${POSTGRES_PASSWORD}
+      - PEERTUBE_DB_HOSTNAME=peertube-postgres
+      - PEERTUBE_REDIS_HOSTNAME=peertube-redis
+      - PEERTUBE_ADMIN_EMAIL=${PEERTUBE_ADMIN_EMAIL}
+      - PEERTUBE_SECRET=${PEERTUBE_SECRET}
+      - PEERTUBE_SMTP_HOSTNAME=${PEERTUBE_SMTP_HOSTNAME:-postfix}
+      - PEERTUBE_SMTP_PORT=${PEERTUBE_SMTP_PORT:-25}
+      - PEERTUBE_SMTP_FROM=${PEERTUBE_SMTP_FROM:-noreply@${DOMAIN}}
+    networks:
+      - proxy-tier
+      - peertube
+    volumes:
+      - peertube_assets:/app/client/dist
+      - /data/peertube:/data
+      - /data/peertube/config:/config
+    depends_on:
+      - proxy
+      - peertube-postgres
+      - peertube-redis
+      - peertube-postfix
+
+  peertube-postgres:
+    image: postgres:17-alpine
+    container_name: peertube-postgres
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-peertube}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-peertube}
+    volumes:
+      - /data/postgres-peertube/db:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - peertube
+
+  peertube-redis:
+    image: redis:7-alpine
+    container_name: peertube-redis
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - /data/redis:/data
+    restart: unless-stopped
+    networks:
+      - peertube
+
+  peertube-postfix:
+    image: mwader/postfix-relay
+    container_name: peertube-postfix
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - POSTFIX_myhostname=video.${DOMAIN}
+    volumes:
+      - /data/opendkim/keys:/etc/opendkim/keys
+    restart: unless-stopped
+    networks:
+      - peertube
+
+volumes:
+  peertube_assets:
+
+networks:
+  proxy-tier:
+    external: true
+  peertube:
+    name: peertube
