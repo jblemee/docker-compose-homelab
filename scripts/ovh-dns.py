@@ -22,31 +22,47 @@ import requests
 import socket
 from pathlib import Path
 
-# Load .env file
-env_path = Path(__file__).parent / ".env"
-if env_path.exists():
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                os.environ.setdefault(key.strip(), value.strip())
+# Load .env file.
+# The .env lives at the repository root while this script sits in scripts/, so
+# looking only next to the script silently finds nothing and every OVH call
+# then fails on missing credentials. Check the repo root and the cwd too.
+for env_candidate in [
+    Path(__file__).parent.parent / ".env",
+    Path(__file__).parent / ".env",
+    Path.cwd() / ".env",
+]:
+    if env_candidate.exists():
+        with open(env_candidate) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+        break
 
 OVH_ENDPOINT = "https://eu.api.ovh.com/1.0"
 DEFAULT_DOMAIN = os.environ.get('DOMAIN', None)  # Read from .env, require --domain if not set
 
 
-def get_server_ip():
-    """Get the server's public IP address."""
-    try:
-        response = requests.get("https://api.ipify.org", timeout=5)
-        return response.text.strip()
-    except:
+def get_server_ip(family="ipv4"):
+    """Get the server's public IP address for the given family ("ipv4"/"ipv6").
+
+    The family matters: a generic lookup returns whichever protocol the request
+    happened to use, so asking for an AAAA target and getting an IPv4 back
+    would publish a broken record.
+    """
+    endpoints = {
+        "ipv4": ["https://api4.ipify.org", "https://ipv4.icanhazip.com"],
+        "ipv6": ["https://api6.ipify.org", "https://ipv6.icanhazip.com"],
+    }[family]
+    for url in endpoints:
         try:
-            response = requests.get("https://ifconfig.me", timeout=5)
-            return response.text.strip()
-        except:
-            return None
+            response = requests.get(url, timeout=5)
+            if response.ok and response.text.strip():
+                return response.text.strip()
+        except requests.RequestException:
+            continue
+    return None
 
 
 def ovh_call(method, path, body=""):
@@ -190,17 +206,37 @@ def refresh_zone(domain):
 
 
 def check_record(domain, subdomain):
-    """Check if a subdomain resolves correctly."""
-    fqdn = f"{subdomain}.{domain}"
+    """Check that a subdomain resolves over BOTH IPv4 and IPv6.
 
-    # Check DNS
-    try:
-        ip = socket.gethostbyname(fqdn)
-        print(f"DNS resolution: {fqdn} -> {ip}")
-        return ip
-    except socket.gaierror:
+    Checking only IPv4 (socket.gethostbyname) is how a missing AAAA record
+    stays invisible for months: everything works from any dual-stack client,
+    right up until a visitor whose IPv4 path is broken falls back to IPv6 and
+    finds nothing there. Report each family separately so the gap is obvious.
+    """
+    # An empty subdomain means the apex record; f"{''}.{domain}" would query
+    # ".example.com" and always fail to resolve.
+    fqdn = f"{subdomain}.{domain}" if subdomain else domain
+
+    results = {}
+    for label, family in (("A", socket.AF_INET), ("AAAA", socket.AF_INET6)):
+        try:
+            infos = socket.getaddrinfo(fqdn, None, family)
+            addrs = sorted({info[4][0] for info in infos})
+        except socket.gaierror:
+            addrs = []
+        results[label] = addrs
+        if addrs:
+            print(f"  {label:4} {fqdn} -> {', '.join(addrs)}")
+        else:
+            print(f"  {label:4} {fqdn} -> (none)")
+
+    if not any(results.values()):
         print(f"DNS resolution failed for {fqdn}")
-        return None
+    elif not all(results.values()):
+        missing = [k for k, v in results.items() if not v]
+        print(f"WARNING: {fqdn} has no {'/'.join(missing)} record - "
+              f"it will be unreachable for clients using that protocol.")
+    return results
 
 
 def main():
@@ -217,11 +253,12 @@ def main():
     args = parser.parse_args()
 
     if args.action == "ip":
-        ip = get_server_ip()
-        if ip:
-            print(f"Server public IP: {ip}")
-        else:
-            print("Could not determine server IP")
+        v4 = get_server_ip("ipv4")
+        v6 = get_server_ip("ipv6")
+        print(f"Server public IPv4: {v4 or '(none)'}")
+        print(f"Server public IPv6: {v6 or '(none)'}")
+        if not v4 and not v6:
+            sys.exit(1)
         return
 
     # Validate domain is set for actions that need it
@@ -249,10 +286,12 @@ def main():
             # CNAME default target is the domain itself (e.g., example.com.)
             target = args.ip or f"{args.domain}."
         else:
-            # A record needs an IP
-            target = args.ip or get_server_ip()
+            # A/AAAA records need an IP of the matching family
+            family = "ipv6" if args.type.upper() == "AAAA" else "ipv4"
+            target = args.ip or get_server_ip(family)
             if not target:
-                print("Error: Could not determine IP address. Use --ip/--target to specify.")
+                print(f"Error: Could not determine {family} address. "
+                      f"Use --ip/--target to specify.")
                 sys.exit(1)
         add_record(args.domain, args.subdomain, target, args.type, args.ttl)
 

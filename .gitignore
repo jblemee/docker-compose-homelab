@@ -1,12 +1,14 @@
 # Environment files (contain secrets)
-.env
-.env_*
+# Broad pattern on purpose: name-by-name rules let ad hoc backups through
+# (.env.bak-2026-01-01, .env.old, .env.save...) and a single missed line is
+# enough to commit every secret you have.
+.env*
 !.env.example
 
 # Data directories
 /data/
 
-# Claude Code local files
+# Claude Code local files (skills are kept - they are project automation)
 .claude/*
 !.claude/skills/
 
@@ -16,3 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Python
+__pycache__/
+*.py[cod]

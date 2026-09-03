@@ -18,6 +18,39 @@ This skill adds a new service to the Docker Compose homelab with:
 - OVH API credentials in `.env` (optional, for DNS automation)
 - `scripts/ovh-dns.py` script available
 
+## Critical rule 1: never reuse a generic service key (`postgres`, `redis`, `db`)
+
+No `COMPOSE_PROJECT_NAME` is set, so Compose derives one project name from the
+directory for **every** `-f docker-compose.yml -f services/*.yml` invocation,
+whichever override files are passed. Compose then identifies a container by
+`<project>+<service key>` — **not** by the file that defined it.
+
+So a new `services/<name>.yml` that declares a service key already used by
+another stack takes over that stack's container. Bringing up only the new file,
+without even mentioning the other one, **recreates** (destroys and replaces) the
+running container with the new image, volumes and environment. A distinct
+`container_name:` does not help: the collision happens at the service-key level,
+before `container_name` is considered. This has taken a live database offline.
+
+**Rule:** prefix the service key itself with the service name —
+`myapp-postgres`, not `postgres` (see `services/peertube.yml` for the pattern).
+Before writing the file, check the keys you plan to use:
+
+```bash
+grep -rn "^  [a-z0-9_-]*:" services/*.yml docker-compose.yml | sort -u
+```
+
+If any planned key already appears, rename it.
+
+## Critical rule 2: always create BOTH A and AAAA records
+
+An A-only subdomain looks perfectly healthy for months: every dual-stack client
+reaches it over IPv4 and nothing complains. It breaks the day a visitor's IPv4
+path degrades and their client falls back to IPv6, finding no record — which
+presents as a mysterious outage on that one service while every sibling
+subdomain (which does have an AAAA) keeps working. Diagnosing it from the
+symptom is slow; creating both records up front costs one extra command.
+
 ## Required Information
 
 Before adding a service, gather:
@@ -35,17 +68,25 @@ First, read the DOMAIN from .env:
 source .env && echo "Domain: $DOMAIN"
 ```
 
-### 2. Add DNS Record (if OVH configured)
+### 2. Add DNS Records (if OVH configured)
+
+Confirm what the server actually has, then create one record per family it
+answers on (`add` picks the matching address automatically):
 
 ```bash
-python3 scripts/ovh-dns.py add <subdomain>
+python3 scripts/ovh-dns.py ip                        # shows public IPv4 + IPv6
+python3 scripts/ovh-dns.py add <subdomain> --type A
+python3 scripts/ovh-dns.py add <subdomain> --type AAAA
 ```
 
-Verify DNS propagation:
+Verify **both** before continuing — `check` reports each family separately and
+warns when one is missing:
 ```bash
 python3 scripts/ovh-dns.py check <subdomain>
-dig +short <subdomain>.${DOMAIN}
 ```
+
+Do not proceed to step 3 while a family the server supports shows `(none)`;
+re-run the corresponding `add`. Allow 5-10 minutes for propagation.
 
 ### 3. Create Service File
 
@@ -152,12 +193,19 @@ volumes:
 ## Rollback
 
 If something goes wrong:
-```bash
-# Stop and remove service
-docker compose -f docker-compose.yml -f services/<name>.yml down
+**Never use a bare `down` here.** On a multi-file invocation it tears down every
+service across all `-f` files — including the `proxy` and `letsencrypt-companion`
+from `docker-compose.yml`, taking every other site offline. With `-v` it also
+deletes the `certs` and `acme` volumes, destroying every SSL certificate on the
+server. Always name the containers to remove:
 
-# Remove DNS record (if created)
-python3 scripts/ovh-dns.py delete <subdomain>
+```bash
+# Stop and remove ONLY this service's containers
+docker compose -f docker-compose.yml -f services/<name>.yml rm -sf <service-key> [<other-keys>...]
+
+# Remove DNS records (if created)
+python3 scripts/ovh-dns.py delete <subdomain> --type A
+python3 scripts/ovh-dns.py delete <subdomain> --type AAAA
 
 # Remove service file
 rm services/<name>.yml

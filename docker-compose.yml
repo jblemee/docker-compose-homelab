@@ -2,7 +2,10 @@
 # Docker Compose Homelab - Base Infrastructure
 # =============================================================================
 # This file contains only the reverse proxy and SSL infrastructure.
-# Add services using: docker compose -f docker-compose.yml -f services/media.yml up -d
+# Add services using: docker compose -f docker-compose.yml -f services/<name>.yml up -d
+#
+# WARNING: never run a bare `down` on a multi-file invocation - it tears down
+# the proxy and letsencrypt-companion defined here too. See CLAUDE.md.
 # =============================================================================
 
 services:
@@ -25,6 +28,7 @@ services:
       - html:/usr/share/nginx/html
       - /var/run/docker.sock:/tmp/docker.sock:ro
       - ./proxy/uploadsize.conf:/etc/nginx/conf.d/uploadsize.conf:ro
+      - ./proxy/ratelimit.conf:/etc/nginx/conf.d/ratelimit.conf:ro
     networks:
       - proxy-tier
 
@@ -42,6 +46,10 @@ services:
       - certs:/etc/nginx/certs
       - vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
+      # acme.sh account state (registration + keys). Without this volume the
+      # companion re-registers and re-issues every certificate each time the
+      # container is recreated, which can hit Let's Encrypt rate limits.
+      - acme:/etc/acme.sh
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - proxy-tier
@@ -52,6 +60,7 @@ volumes:
   certs:
   vhost.d:
   html:
+  acme:
 
 networks:
   proxy-tier:
